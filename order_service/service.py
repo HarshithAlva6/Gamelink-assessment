@@ -1,6 +1,4 @@
-"""Orchestrates the order state machine: owns storage, and decides which
-recovery path to take when a given stage fails.
-"""
+"""Owns order storage and picks the recovery path when a stage fails."""
 
 from __future__ import annotations
 
@@ -22,9 +20,7 @@ class OrderService:
         self._payment_processor = payment_processor
         self._fulfillment_service = fulfillment_service
         self._orders: dict[str, Order] = {}
-        # Orders are read/mutated from HTTP handlers, which stdlib's ThreadingHTTPServer
-        # dispatches on separate threads; guard shared state accordingly.
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # ThreadingHTTPServer dispatches each request on its own thread
 
     def create(self, amount_cents: int, currency: str, customer_id: str) -> Order:
         order = Order.create(amount_cents, currency, customer_id)
@@ -44,7 +40,7 @@ class OrderService:
             return list(self._orders.values())
 
     def authorize_payment(self, order_id: str) -> Order:
-        """Stage 1 -> 2. A decline is straightforward: reject the order, no cleanup needed."""
+        """A decline just rejects the order -- nothing was ever authorized, so no cleanup."""
         order = self.get(order_id)
         with self._lock:
             self._assert_stage(order, OrderState.INITIALIZED)
@@ -59,14 +55,10 @@ class OrderService:
             return order
 
     def complete(self, order_id: str) -> Order:
-        """Stage 2 -> 3.
-
-        A completion failure after payment was authorized is NOT the same as a
-        decline: money has already moved, so it must be voided before the
-        order can be safely cancelled. If the void also fails, we can't claim
-        the order is cleanly cancelled -- it goes to NEEDS_ATTENTION for a
-        human to resolve, and both the completion error and the void error
-        are recorded rather than swallowed.
+        """A completion failure isn't a decline: money's already authorized, so it
+        has to be voided before the order can be cancelled. If the void fails
+        too, we can't claim a clean cancellation -- go to NEEDS_ATTENTION and
+        keep both errors instead of picking one.
         """
         order = self.get(order_id)
         with self._lock:
@@ -97,8 +89,6 @@ class OrderService:
             return order
 
     def _assert_stage(self, order: Order, expected: OrderState) -> None:
-        """Fails fast, before touching payment/fulfillment services, if the order
-        isn't in the stage this action expects."""
         if order.state in TERMINAL_STATES:
             raise TerminalStateError(order.id, order.state)
         if order.state != expected:

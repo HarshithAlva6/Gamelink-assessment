@@ -1,11 +1,4 @@
-"""Order state machine.
-
-Happy path:   INITIALIZED -> PAYMENT_AUTHORIZED -> COMPLETE
-Failure paths:
-  INITIALIZED         -> REJECTED         (payment declined, no cleanup)
-  PAYMENT_AUTHORIZED  -> CANCELLED        (completion failed, void succeeded)
-  PAYMENT_AUTHORIZED  -> NEEDS_ATTENTION  (completion failed, void ALSO failed)
-"""
+"""Order state machine: states, legal transitions, and history."""
 
 from __future__ import annotations
 
@@ -30,7 +23,7 @@ TERMINAL_STATES = frozenset(
     {OrderState.COMPLETE, OrderState.REJECTED, OrderState.CANCELLED, OrderState.NEEDS_ATTENTION}
 )
 
-# Adjacency list of valid transitions. Anything not listed here is illegal.
+# anything not listed here is an illegal move
 VALID_TRANSITIONS: dict[OrderState, frozenset[OrderState]] = {
     OrderState.INITIALIZED: frozenset({OrderState.PAYMENT_AUTHORIZED, OrderState.REJECTED}),
     OrderState.PAYMENT_AUTHORIZED: frozenset(
@@ -77,9 +70,7 @@ class StateTransition:
     to_state: OrderState
     reason: str
     at: str = field(default_factory=_now)
-    # Present when the transition was itself caused by a failure (e.g. a void
-    # failing). Recorded, never swallowed.
-    error: Optional[str] = None
+    error: Optional[str] = None  # set when this transition was itself caused by a failure
 
     def to_dict(self) -> dict:
         d = {
@@ -133,7 +124,6 @@ class Order:
         return order
 
     def apply_transition(self, to_state: OrderState, reason: str, error: Optional[str] = None) -> None:
-        """Mutates the order in place. Raises InvalidTransitionError if not allowed."""
         if not is_valid_transition(self.state, to_state):
             raise InvalidTransitionError(self.state, to_state)
         self.history.append(

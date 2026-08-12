@@ -1,9 +1,9 @@
-"""Tiny hand-rolled HTTP API (stdlib only -- four routes doesn't need a framework).
+"""Stdlib HTTP API -- four routes doesn't need a framework.
 
-  POST /orders                  {amount_cents, currency, customer_id} -> Order
-  GET  /orders/<id>              -> Order (current state + full history)
-  POST /orders/<id>/authorize    -> Order (attempts payment authorization)
-  POST /orders/<id>/complete     -> Order (attempts completion / fulfillment)
+  POST /orders                 create an order
+  GET  /orders/<id>            current state + history
+  POST /orders/<id>/authorize  attempt payment authorization
+  POST /orders/<id>/complete   attempt completion / fulfillment
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ def main() -> None:
     service = OrderService(AlwaysApprovePaymentProcessor(), AlwaysSucceedFulfillmentService())
     port = int(os.environ.get("PORT", 3000))
     server = ThreadingHTTPServer(("localhost", port), make_handler(service))
-    print(f"gametime-checkout-orders listening on http://localhost:{port}")
+    print(f"listening on http://localhost:{port}")
     server.serve_forever()
 
 

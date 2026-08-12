@@ -1,4 +1,4 @@
-"""Configurable fakes so tests can control authorize/complete/void outcomes independently."""
+"""Fakes with independently controllable authorize/complete/void outcomes."""
 
 from __future__ import annotations
 

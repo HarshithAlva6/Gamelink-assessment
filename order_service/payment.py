@@ -1,6 +1,6 @@
-"""Payment and fulfillment are stubbed as interfaces (ABCs) so a real payment
-processor (Stripe, Braintree, ...) or fulfillment system (ticket issuance) can
-be dropped in later without touching the state machine or service logic.
+"""Payment and fulfillment stubbed as interfaces so real implementations
+(Stripe, ticket issuance, ...) can be swapped in without touching the state
+machine or service logic.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ class FulfillmentService(ABC):
 
 
 class AlwaysApprovePaymentProcessor(PaymentProcessor):
-    """Default stub: always approves, always voids cleanly. Enough to boot the server."""
+    """Default stub used to boot the server without a real payment integration."""
 
     def authorize(self, order_id: str, amount_cents: int, currency: str) -> AuthorizeResult:
         return AuthorizeResult(authorized=True)
