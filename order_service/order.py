@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import itertools
-import time
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -84,11 +84,20 @@ class StateTransition:
         return d
 
 
+_id_lock = threading.Lock()
 _id_counter = itertools.count(1)
+_id_counter_day = datetime.now(timezone.utc).strftime("%Y%m%d")
 
 
 def _next_id() -> str:
-    return f"ord_{int(time.time() * 1000):x}{next(_id_counter):03d}"
+    global _id_counter, _id_counter_day
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    with _id_lock:
+        if today != _id_counter_day:
+            _id_counter_day = today
+            _id_counter = itertools.count(1)
+        seq = next(_id_counter)
+    return f"ord_{today}_{seq:03d}"
 
 
 @dataclass
