@@ -3,7 +3,21 @@
 A small order state machine with stage-dependent failure recovery, built as a
 take-home prototype for a checkout backend problem.
 
-## What I built
+## What I built and why
+
+The interesting part of this problem isn't the happy path, it's that
+"something failed" means different things at different stages. The same
+event (completion fails) needs a different recovery depending on whether
+money has moved yet. So the design keeps two concerns apart: which
+transitions are *legal* lives in `order.py`, and which recovery is
+*correct* for a given failure lives in `service.py`. That split is why
+adding a new failure mode means adding a policy branch rather than editing
+the state machine.
+
+The one case that resists automation is a failed void: the order is
+neither completed nor cleanly reversed, and money may still be held. Rather
+than pick the more convenient lie and call it `cancelled`, it gets its own
+state.
 
 An `Order` moves through a fixed set of states:
 
@@ -151,3 +165,64 @@ transition-legality and concurrency guards:
   concurrently and a global lock becomes a bottleneck.
 - Real payment/fulfillment adapters behind the existing interfaces --
   the whole point of stubbing them was to make that a drop-in change.
+
+## How I used AI on this
+
+I used Claude Code to write first-draft code under fairly close direction:
+I made the calls, it typed, and I reviewed and corrected what came back.
+The decisions below were the ones that shaped the result.
+
+**Calls I made**
+
+- **Language.** The first draft came back in TypeScript and I rejected it.
+  The role lists Go and "similar languages (Python, Java, ...)" for backend
+  work, with TypeScript only on the React side, so Python was the better
+  fit. (Go was my first choice; it isn't installed on this machine and
+  setting it up wasn't worth the time budget.)
+- **Scope.** I checked the ask against the JD and deliberately did *not*
+  build a UI -- the assignment asks for a service and an API, and the brief
+  says not to over-engineer. React on the JD describes the team, not this
+  problem.
+- **Order IDs.** The draft generated opaque `ord_<hex><counter>` values.
+  I changed them to `ord_YYYYMMDD_NNN`, which is what a support agent would
+  actually read back over the phone, and had the daily counter reset so
+  they stay short.
+- **Concurrency.** The failure modes in the brief are all sequential, but
+  the interesting question is what happens when two requests race the same
+  order. I pushed on that specifically -- whether the design could deadlock
+  and what a double-complete does -- which is what produced
+  `test_no_double_complete_race` and the reentrancy note in the tradeoffs.
+- **Comment density.** The first pass was over-commented, with lines that
+  just restated the code beneath them. I had them cut back to explaining
+  *why* -- the lock, the decline-vs-completion-failure distinction -- and
+  reviewed the result against SOLID rather than accepting the structure
+  on faith.
+
+**What I kept from the draft**
+
+The three-way split (transition legality in `order.py`, recovery policy in
+`service.py`, external contracts in `payment.py`) was drafted rather than
+specified by me, but I kept it deliberately: it's the separation that lets
+the void-failure path be driven purely by `PaymentProcessor.void()` without
+leaking into fulfillment logic, and it's what makes the fakes in
+`tests/fakes.py` drop-in.
+
+**How I validated it**
+
+- I ran the suite (8 tests green) and drove the live server with curl
+  end-to-end rather than trusting the tests alone -- including manually
+  racing two parallel `complete` requests and confirming one `200` and one
+  `409`.
+- The concurrency test is the clearest case of the draft being wrong. It
+  originally asserted the losing thread would see `InvalidTransitionError`
+  and that fulfillment would be called twice. Running it showed both were
+  wrong: the loser gets `TerminalStateError`, and fulfillment is called
+  exactly once, because the lock blocks the second thread before it ever
+  reaches that call. The conclusion held but the reasoning didn't, so I
+  corrected the assertions to match actual behavior.
+- I satisfied myself on the deadlock question by reasoning about the lock
+  directly rather than taking the answer on faith: one non-reentrant lock,
+  never acquired nested, so no wait cycle can form. That reasoning is also
+  what surfaced the reentrancy hazard I flagged in the tradeoffs -- a
+  future payment adapter calling back into `OrderService` would break the
+  property, and that's worth knowing before someone wires one in.
