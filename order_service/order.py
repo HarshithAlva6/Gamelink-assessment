@@ -1,0 +1,153 @@
+"""Order state machine.
+
+Happy path:   INITIALIZED -> PAYMENT_AUTHORIZED -> COMPLETE
+Failure paths:
+  INITIALIZED         -> REJECTED         (payment declined, no cleanup)
+  PAYMENT_AUTHORIZED  -> CANCELLED        (completion failed, void succeeded)
+  PAYMENT_AUTHORIZED  -> NEEDS_ATTENTION  (completion failed, void ALSO failed)
+"""
+
+from __future__ import annotations
+
+import itertools
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional
+
+
+class OrderState(str, Enum):
+    INITIALIZED = "initialized"
+    PAYMENT_AUTHORIZED = "payment_authorized"
+    COMPLETE = "complete"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+    NEEDS_ATTENTION = "needs_attention"
+
+
+TERMINAL_STATES = frozenset(
+    {OrderState.COMPLETE, OrderState.REJECTED, OrderState.CANCELLED, OrderState.NEEDS_ATTENTION}
+)
+
+# Adjacency list of valid transitions. Anything not listed here is illegal.
+VALID_TRANSITIONS: dict[OrderState, frozenset[OrderState]] = {
+    OrderState.INITIALIZED: frozenset({OrderState.PAYMENT_AUTHORIZED, OrderState.REJECTED}),
+    OrderState.PAYMENT_AUTHORIZED: frozenset(
+        {OrderState.COMPLETE, OrderState.CANCELLED, OrderState.NEEDS_ATTENTION}
+    ),
+    OrderState.COMPLETE: frozenset(),
+    OrderState.REJECTED: frozenset(),
+    OrderState.CANCELLED: frozenset(),
+    OrderState.NEEDS_ATTENTION: frozenset(),
+}
+
+
+def is_valid_transition(from_state: OrderState, to_state: OrderState) -> bool:
+    return to_state in VALID_TRANSITIONS[from_state]
+
+
+class InvalidTransitionError(Exception):
+    def __init__(self, from_state: OrderState, to_state: OrderState):
+        self.from_state = from_state
+        self.to_state = to_state
+        super().__init__(f"Invalid transition: {from_state.value} -> {to_state.value}")
+
+
+class OrderNotFoundError(Exception):
+    def __init__(self, order_id: str):
+        self.order_id = order_id
+        super().__init__(f"Order not found: {order_id}")
+
+
+class TerminalStateError(Exception):
+    def __init__(self, order_id: str, state: OrderState):
+        self.order_id = order_id
+        self.state = state
+        super().__init__(f"Order {order_id} is already in terminal state '{state.value}'")
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class StateTransition:
+    from_state: OrderState
+    to_state: OrderState
+    reason: str
+    at: str = field(default_factory=_now)
+    # Present when the transition was itself caused by a failure (e.g. a void
+    # failing). Recorded, never swallowed.
+    error: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        d = {
+            "from": self.from_state.value,
+            "to": self.to_state.value,
+            "reason": self.reason,
+            "at": self.at,
+        }
+        if self.error is not None:
+            d["error"] = self.error
+        return d
+
+
+_id_counter = itertools.count(1)
+
+
+def _next_id() -> str:
+    return f"ord_{int(time.time() * 1000):x}{next(_id_counter):03d}"
+
+
+@dataclass
+class Order:
+    id: str
+    amount_cents: int
+    currency: str
+    customer_id: str
+    state: OrderState
+    history: list[StateTransition]
+    created_at: str
+
+    @classmethod
+    def create(cls, amount_cents: int, currency: str, customer_id: str) -> "Order":
+        now = _now()
+        order = cls(
+            id=_next_id(),
+            amount_cents=amount_cents,
+            currency=currency,
+            customer_id=customer_id,
+            state=OrderState.INITIALIZED,
+            history=[],
+            created_at=now,
+        )
+        order.history.append(
+            StateTransition(
+                from_state=OrderState.INITIALIZED,
+                to_state=OrderState.INITIALIZED,
+                reason="order created",
+                at=now,
+            )
+        )
+        return order
+
+    def apply_transition(self, to_state: OrderState, reason: str, error: Optional[str] = None) -> None:
+        """Mutates the order in place. Raises InvalidTransitionError if not allowed."""
+        if not is_valid_transition(self.state, to_state):
+            raise InvalidTransitionError(self.state, to_state)
+        self.history.append(
+            StateTransition(from_state=self.state, to_state=to_state, reason=reason, error=error)
+        )
+        self.state = to_state
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "amount_cents": self.amount_cents,
+            "currency": self.currency,
+            "customer_id": self.customer_id,
+            "state": self.state.value,
+            "created_at": self.created_at,
+            "history": [t.to_dict() for t in self.history],
+        }
