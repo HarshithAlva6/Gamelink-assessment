@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from order_service.payment import (
     AuthorizeResult,
     CompleteResult,
@@ -31,7 +33,10 @@ class FakeFulfillmentService(FulfillmentService):
     def __init__(self) -> None:
         self.complete_result = CompleteResult(completed=True)
         self.complete_calls = 0
+        self.delay_seconds = 0.0  # widens the race window for concurrency tests
 
     def complete(self, order_id: str) -> CompleteResult:
         self.complete_calls += 1
+        if self.delay_seconds:
+            time.sleep(self.delay_seconds)
         return self.complete_result

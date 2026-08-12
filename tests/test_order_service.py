@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 
 import pytest
@@ -107,3 +108,36 @@ def test_cannot_reauthorize_an_already_authorized_order(rig):
 
     with pytest.raises(InvalidTransitionError):
         service.authorize_payment(order.id)
+
+
+def test_no_double_complete_race(rig):
+    """Two threads racing to complete the same order: the lock serializes
+    them, so the loser sees a terminal order rather than double-processing
+    it. Both threads returning within the join timeout also proves there's
+    no deadlock, rather than the test hanging forever.
+    """
+    service, _payment, fulfillment = rig
+    fulfillment.delay_seconds = 0.05  # widen the race window
+    order = service.create(**ORDER_INPUT)
+    service.authorize_payment(order.id)
+
+    outcomes: list[object] = [None, None]
+
+    def attempt(index: int) -> None:
+        try:
+            outcomes[index] = service.complete(order.id).state
+        except (InvalidTransitionError, TerminalStateError) as err:
+            outcomes[index] = err
+
+    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=2)  # a deadlock would leave a thread alive past this
+
+    assert not any(t.is_alive() for t in threads)
+    assert fulfillment.complete_calls == 1  # loser never re-runs fulfillment
+    successes = [o for o in outcomes if o == OrderState.COMPLETE]
+    rejections = [o for o in outcomes if isinstance(o, (InvalidTransitionError, TerminalStateError))]
+    assert len(successes) == 1
+    assert len(rejections) == 1

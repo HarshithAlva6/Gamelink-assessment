@@ -81,8 +81,8 @@ demand -- see `tests/test_order_service.py`.
 
 ## Tests
 
-`tests/test_order_service.py` covers the four required scenarios plus two
-transition-legality guards:
+`tests/test_order_service.py` covers the four required scenarios plus
+transition-legality and concurrency guards:
 
 1. Happy path: `initialized → payment_authorized → complete`
 2. Payment decline: `rejected`, and confirms `void` was never called
@@ -92,6 +92,10 @@ transition-legality guards:
    present in the record
 5. Rejecting an order is terminal -- no further transitions allowed
 6. Can't `complete` before `authorize`, can't `authorize` twice
+7. Two threads racing to complete the same order: the lock serializes them,
+   the loser gets `TerminalStateError` instead of double-processing, and
+   both threads return within a timeout -- proving there's no deadlock,
+   not just asserting it
 
 ## Tradeoffs I made
 
